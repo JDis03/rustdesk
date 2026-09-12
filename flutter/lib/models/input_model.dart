@@ -503,6 +503,7 @@ class InputModel {
       isViewCamera: () => isViewCamera,
       peerVersion: () => peerVersion,
       peerPlatform: () => peerPlatform,
+      peerIsWayland: () => parent.target?.ffiModel.pi.isWayland ?? false,
       modify: (msg) => modify(msg),
       getPointerInsideImage: () => _pointerInsideImage,
       setPointerInsideImage: (inside) => _pointerInsideImage = inside,

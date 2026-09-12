@@ -22,6 +22,7 @@ class RelativeMouseModel {
   final bool Function() isViewCamera;
   final String Function() peerVersion;
   final String? Function() peerPlatform;
+  final bool Function() peerIsWayland;
 
   final Map<String, dynamic> Function(Map<String, dynamic> msg) modify;
 
@@ -35,6 +36,7 @@ class RelativeMouseModel {
     required this.isViewCamera,
     required this.peerVersion,
     required this.peerPlatform,
+    required this.peerIsWayland,
     required this.modify,
     required this.getPointerInsideImage,
     required this.setPointerInsideImage,
@@ -192,11 +194,11 @@ class RelativeMouseModel {
     if (isDesktop && isLinux && bind.mainCurrentIsWayland()) {
       return false;
     }
-    // Relative mouse mode is unsupported on remote Linux:
-    // 1. Long-press key events are unsupported.
-    // 2. The Wayland display server lacks cursor warping support.
+    // Relative mouse mode is unsupported on remote Linux/Wayland:
+    // the Wayland display server lacks cursor warping support.
+    // X11 hosts are supported via libxdo relative mouse movement.
     final platform = peerPlatform();
-    if (platform == kPeerPlatformLinux) {
+    if (platform == kPeerPlatformLinux && peerIsWayland()) {
       return false;
     }
     final v = peerVersion();
