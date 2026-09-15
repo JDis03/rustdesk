@@ -35,6 +35,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import com.hjq.permissions.XXPermissions
 import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterView
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import kotlin.concurrent.thread
@@ -54,6 +55,7 @@ class MainActivity : FlutterActivity() {
     private val channelTag = "mChannel"
     private val logTag = "mMainActivity"
     private var mainService: MainService? = null
+    private var pointerCaptureProvider: AndroidPointerCaptureProvider? = null
     private sealed class PendingPicker {
         data class ImportFiles(val result: MethodChannel.Result) : PendingPicker()
         data class ExportFile(val source: File, val result: MethodChannel.Result) : PendingPicker()
@@ -225,6 +227,16 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        initPointerCaptureProvider()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            pointerCaptureProvider == null
+        ) {
+            window.decorView.post {
+                if (!isDestroyed && pointerCaptureProvider == null) {
+                    initPointerCaptureProvider()
+                }
+            }
+        }
         if (_rdClipboardManager == null) {
             _rdClipboardManager = RdClipboardManager(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
             FFI.setClipboardManager(_rdClipboardManager!!)
@@ -232,6 +244,10 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            pointerCaptureProvider?.destroy()
+        }
+        pointerCaptureProvider = null
         Log.e(logTag, "onDestroy")
         // The process can outlive the UI whenever something keeps it alive:
         // MainService, or the accessibility InputService on its own. Only the
@@ -247,6 +263,28 @@ class MainActivity : FlutterActivity() {
             unbindService(serviceConnection)
         }
         super.onDestroy()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            pointerCaptureProvider?.onWindowFocusChanged(hasFocus)
+        }
+    }
+
+    override fun onPointerCaptureChanged(hasCapture: Boolean) {
+        super.onPointerCaptureChanged(hasCapture)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            pointerCaptureProvider?.onPointerCaptureChanged(hasCapture)
+        }
+    }
+
+    private fun initPointerCaptureProvider() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || pointerCaptureProvider != null) return
+        val flutterView = findViewById<FlutterView>(FlutterActivity.FLUTTER_VIEW_ID) ?: return
+        pointerCaptureProvider = AndroidPointerCaptureProvider(this, flutterView) { method, arguments ->
+            flutterMethodChannel?.invokeMethod(method, arguments)
+        }
     }
 
     private val serviceConnection = object : ServiceConnection {
@@ -352,6 +390,14 @@ class MainActivity : FlutterActivity() {
                         mainService?.cancelNotification(id)
                     } else {
                         result.success(true)
+                    }
+                }
+                "set_pointer_capture_enabled" -> {
+                    val enabled = call.arguments as? Boolean
+                    if (enabled == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                        result.success(false)
+                    } else {
+                        result.success(pointerCaptureProvider?.setEnabled(enabled) ?: false)
                     }
                 }
                 "enable_soft_keyboard" -> {
