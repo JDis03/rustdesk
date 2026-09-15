@@ -3211,7 +3211,13 @@ impl Connection {
                         // fix unexpected repeating key on remote linux, seems also fix abnormal alt/shift, which
                         // make sure all key are released
                         // https://github.com/rustdesk/rustdesk/issues/6793
-                        let is_press = if cfg!(target_os = "linux") {
+                        //
+                        // Collapsing a down into a press releases the key right away, so no key
+                        // can be held. A client driving a game that way can look around but never
+                        // walk, so honour its down/up pairs like the other platforms do.
+                        let is_press = if cfg!(target_os = "linux")
+                            && !is_relative_mouse_active(self.inner.id())
+                        {
                             (me.press || me.down) && !(crate::is_modifier(&me) || key.is_some())
                         } else {
                             me.press

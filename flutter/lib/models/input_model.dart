@@ -890,6 +890,13 @@ class InputModel {
       return KeyEventResult.handled;
     }
 
+    // Under pointer capture the peer holds the key down instead of tapping it,
+    // so the remote system produces its own repeats. Forwarding ours as well
+    // would duplicate them, which is what Moonlight avoids by eating repeats.
+    if (_androidPointerCaptureActive && e is KeyRepeatEvent) {
+      return KeyEventResult.handled;
+    }
+
     bool iosCapsLock = false;
     if (isIOS && (e is KeyDownEvent || e is KeyRepeatEvent)) {
       iosCapsLock = _getIosCapsFromCharacter(e);
@@ -1254,7 +1261,7 @@ class InputModel {
     }
     if (parent.target?.closed != false) return Future<void>.value();
 
-    _androidPointerCaptureActive = true;
+    _markAndroidPointerCaptureActive();
     if (!isPhysicalMouse.value) {
       isPhysicalMouse.value = true;
     }
@@ -1286,9 +1293,32 @@ class InputModel {
     ));
   }
 
+  // The peer only treats a connection as relative once it receives relative
+  // movement, so a key held before the first mouse move would still be taken as
+  // a tap. Announce the mode with the no-op activation marker instead of waiting
+  // for movement. It must not go through modify(): the marker is dropped when it
+  // carries modifier fields.
+  void _markAndroidPointerCaptureActive() {
+    if (_androidPointerCaptureActive) return;
+    _androidPointerCaptureActive = true;
+    if (!keyboardPerm || isViewCamera || !isRelativeMouseModeSupported) return;
+    unawaited(bind.sessionSendMouse(
+      sessionId: sessionId,
+      msg: json.encode({
+        'relative_mouse_mode': '1',
+        'type': 'move_relative',
+        'x': '0',
+        'y': '0',
+      }),
+    ));
+  }
+
   Future<void> setAndroidPointerCaptureActive(bool active) {
-    _androidPointerCaptureActive = active;
-    if (active) return Future<void>.value();
+    if (active) {
+      _markAndroidPointerCaptureActive();
+      return Future<void>.value();
+    }
+    _androidPointerCaptureActive = false;
 
     final buttonsChanged = _androidCapturedQueuedButtonState != 0;
     _androidCapturedQueuedButtonState = 0;

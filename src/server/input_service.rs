@@ -526,7 +526,7 @@ fn set_relative_mouse_active(conn: i32, active: bool) {
 }
 
 #[inline]
-fn is_relative_mouse_active(conn: i32) -> bool {
+pub(crate) fn is_relative_mouse_active(conn: i32) -> bool {
     RELATIVE_MOUSE_CONNS.lock().unwrap().contains(&conn)
 }
 
