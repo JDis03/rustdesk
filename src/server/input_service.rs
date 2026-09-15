@@ -374,6 +374,16 @@ fn run_pos(sp: EmptyExtraFieldService, state: &mut StatePos) -> ResultType<()> {
                 0
             }
         };
+        // Excluding the sender assumes it already knows where it put the cursor,
+        // which only holds for absolute moves. A client sending relative deltas
+        // cannot derive the position, and applications that constrain the pointer
+        // (an Unreal editor viewport, for instance) move it by less than the delta
+        // sent, so withholding the measured position lets that client drift.
+        let exclude = if is_relative_mouse_active(exclude) {
+            0
+        } else {
+            exclude
+        };
         sp.send_without(msg_out, exclude);
     }
     state.cursor_pos = (x, y);

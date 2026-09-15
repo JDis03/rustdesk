@@ -3511,7 +3511,12 @@ class CursorModel with ChangeNotifier {
 
   /// Update the cursor position.
   updateCursorPosition(Map<String, dynamic> evt, String id) async {
-    if (!isConnIn2Secs()) {
+    // Under pointer capture this position is the echo of our own relative
+    // movement, not a remote user taking over. Arming the peer-control timeout
+    // for it would keep isPeerControlProtected true and block our own input.
+    final isOwnRelativeEcho =
+        parent.target?.inputModel.isAndroidPointerCaptureActive == true;
+    if (!isOwnRelativeEcho && !isConnIn2Secs()) {
       gotMouseControl = false;
       _lastPeerMouse = DateTime.now();
     }
