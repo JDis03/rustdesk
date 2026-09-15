@@ -76,7 +76,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   var _showEdit = false; // use soft keyboard
 
   Worker? _waylandKeyboardGateWorker;
+  Worker? _androidPointerCaptureWorker;
+  VoidCallback? _androidPointerCaptureFfiListener;
+  bool? _lastAndroidPointerCaptureDesired;
   bool _waylandKeyboardGateInitialized = false;
+  bool _isDisposing = false;
 
   InputModel get inputModel => gFFI.inputModel;
   SessionID get sessionId => gFFI.sessionId;
@@ -138,10 +142,50 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     if (gFFI.ffiModel.pi.isSet.value) {
       _initWaylandKeyboardGateIfNeeded();
     }
+
+    if (isAndroid) {
+      _androidPointerCaptureWorker =
+          ever(gFFI.ffiModel.pi.isSet, (_) => _syncAndroidPointerCapture());
+      _androidPointerCaptureFfiListener = _syncAndroidPointerCapture;
+      gFFI.ffiModel.addListener(_androidPointerCaptureFfiListener!);
+      _syncAndroidPointerCapture();
+    }
+  }
+
+  void _syncAndroidPointerCapture() {
+    final enabled = !_isDisposing &&
+        gFFI.ffiModel.pi.isSet.value &&
+        inputModel.keyboardPerm &&
+        inputModel.isRelativeMouseModeSupported;
+    if (_lastAndroidPointerCaptureDesired == enabled) return;
+    _lastAndroidPointerCaptureDesired = enabled;
+    unawaited(_setAndroidPointerCaptureEnabled(enabled));
+  }
+
+  Future<void> _setAndroidPointerCaptureEnabled(bool enabled) async {
+    if (!isAndroid || (_isDisposing && enabled)) return;
+    try {
+      await gFFI.invokeMethod("set_pointer_capture_enabled", enabled);
+    } catch (e) {
+      debugPrint("Failed to set Android pointer capture state: $e");
+    }
   }
 
   @override
   Future<void> dispose() async {
+    _isDisposing = true;
+    _androidPointerCaptureWorker?.dispose();
+    final pointerCaptureFfiListener = _androidPointerCaptureFfiListener;
+    if (pointerCaptureFfiListener != null) {
+      gFFI.ffiModel.removeListener(pointerCaptureFfiListener);
+      _androidPointerCaptureFfiListener = null;
+    }
+    _lastAndroidPointerCaptureDesired = false;
+    final disablePointerCapture = _setAndroidPointerCaptureEnabled(false);
+    final releaseCapturedButtons =
+        inputModel.setAndroidPointerCaptureActive(false).catchError((Object e) {
+      debugPrint("Failed to release Android captured buttons: $e");
+    });
     WidgetsBinding.instance.removeObserver(this);
     // Close the session up-front. `gFFI.close()` below only calls `sessionClose`
     // after several awaits (canvas save, image update, the `enable_soft_keyboard`
@@ -153,6 +197,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     unawaited(bind.sessionClose(sessionId: sessionId));
     // https://github.com/flutter/flutter/issues/64935
     super.dispose();
+    await disablePointerCapture;
+    await releaseCapturedButtons;
     gFFI.dialogManager.hideMobileActionsOverlay(store: false);
     gFFI.inputModel.listenToMouse(false);
     gFFI.imageModel.disposeImage();

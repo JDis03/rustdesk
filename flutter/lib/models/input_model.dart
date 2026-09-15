@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -27,6 +28,29 @@ enum MouseButtons { left, right, wheel, back, forward }
 const _kMouseEventDown = 'mousedown';
 const _kMouseEventUp = 'mouseup';
 const _kMouseEventMove = 'mousemove';
+
+class _AndroidCapturedPointerEvent {
+  _AndroidCapturedPointerEvent({
+    required this.dx,
+    required this.dy,
+    required this.wheelX,
+    required this.wheelY,
+    required this.buttonState,
+    required this.buttonsChanged,
+    this.resetRemainders = false,
+  });
+
+  double dx;
+  double dy;
+  final int wheelX;
+  final int wheelY;
+  final int buttonState;
+  final bool buttonsChanged;
+  final bool resetRemainders;
+
+  bool get canCoalesce =>
+      wheelX == 0 && wheelY == 0 && !buttonsChanged && !resetRemainders;
+}
 
 class CanvasCoords {
   double x = 0;
@@ -340,6 +364,13 @@ class InputModel {
   // or a different button was pressed in between.
   static final Map<MouseButtons, InputModel> _sideButtonDownModels = {};
   static bool _sideButtonChannelInitialized = false;
+  static const _androidCapturedButtons = <int, MouseButtons>{
+    1: MouseButtons.left,
+    2: MouseButtons.right,
+    4: MouseButtons.wheel,
+    8: MouseButtons.back,
+    16: MouseButtons.forward,
+  };
 
   /// Each Flutter engine (main window + sub-windows from desktop_multi_window)
   /// runs its own Dart isolate with its own statics. Called from initEnv()
@@ -439,6 +470,15 @@ class InputModel {
   // Mobile relative mouse delta accumulators (for slow/fine movements).
   double _mobileDeltaRemainderX = 0.0;
   double _mobileDeltaRemainderY = 0.0;
+  double _androidCapturedDeltaRemainderX = 0.0;
+  double _androidCapturedDeltaRemainderY = 0.0;
+  bool _androidPointerCaptureActive = false;
+  int _androidCapturedButtonState = 0;
+  int _androidCapturedQueuedButtonState = 0;
+  final Queue<_AndroidCapturedPointerEvent> _androidCapturedPointerEvents =
+      Queue<_AndroidCapturedPointerEvent>();
+  bool _androidCapturedPointerDrainRunning = false;
+  Future<void> _androidCapturedPointerDrain = Future<void>.value();
 
   var _lastScale = 1.0;
 
@@ -492,6 +532,7 @@ class InputModel {
 
   /// Check if the connected server supports relative mouse mode.
   bool get isRelativeMouseModeSupported => _relativeMouse.isSupported;
+  bool get isAndroidPointerCaptureActive => _androidPointerCaptureActive;
 
   InputModel(this.parent) {
     initSideButtonChannel();
@@ -1202,6 +1243,179 @@ class InputModel {
         })));
   }
 
+  Future<void> handleAndroidCapturedPointer(Map<dynamic, dynamic> payload) {
+    final dx = (payload['dx'] as num?)?.toDouble();
+    final dy = (payload['dy'] as num?)?.toDouble();
+    final buttonState = (payload['button_state'] as num?)?.toInt();
+    final vscroll = (payload['vscroll'] as num?)?.toDouble() ?? 0.0;
+    final hscroll = (payload['hscroll'] as num?)?.toDouble() ?? 0.0;
+    if (dx == null || dy == null || buttonState == null) {
+      return Future<void>.value();
+    }
+    if (parent.target?.closed != false) return Future<void>.value();
+
+    _androidPointerCaptureActive = true;
+    if (!isPhysicalMouse.value) {
+      isPhysicalMouse.value = true;
+    }
+    final wheelX = hscroll > 0
+        ? 1
+        : hscroll < 0
+            ? -1
+            : 0;
+    final wheelY = vscroll > 0
+        ? 1
+        : vscroll < 0
+            ? -1
+            : 0;
+    final currentButtons = buttonState & 0x1f;
+    final buttonsChanged = currentButtons != _androidCapturedQueuedButtonState;
+    _androidCapturedQueuedButtonState = currentButtons;
+
+    // Keep Moonlight's motion -> wheel -> button ordering, but coalesce
+    // consecutive motion-only callbacks while an FFI send is pending. Physical
+    // mice can outpace the async bridge by a large margin; chaining every
+    // callback creates a backlog that continues moving after the user stops.
+    return _enqueueAndroidCapturedInput(_AndroidCapturedPointerEvent(
+      dx: dx,
+      dy: dy,
+      wheelX: wheelX,
+      wheelY: wheelY,
+      buttonState: currentButtons,
+      buttonsChanged: buttonsChanged,
+    ));
+  }
+
+  Future<void> setAndroidPointerCaptureActive(bool active) {
+    _androidPointerCaptureActive = active;
+    if (active) return Future<void>.value();
+
+    final buttonsChanged = _androidCapturedQueuedButtonState != 0;
+    _androidCapturedQueuedButtonState = 0;
+    return _enqueueAndroidCapturedInput(_AndroidCapturedPointerEvent(
+      dx: 0.0,
+      dy: 0.0,
+      wheelX: 0,
+      wheelY: 0,
+      buttonState: 0,
+      buttonsChanged: buttonsChanged,
+      resetRemainders: true,
+    ));
+  }
+
+  Future<void> _enqueueAndroidCapturedInput(
+      _AndroidCapturedPointerEvent event) {
+    if (event.canCoalesce && _androidCapturedPointerEvents.isNotEmpty) {
+      final last = _androidCapturedPointerEvents.last;
+      if (last.canCoalesce) {
+        last.dx += event.dx;
+        last.dy += event.dy;
+      } else {
+        _androidCapturedPointerEvents.add(event);
+      }
+    } else {
+      _androidCapturedPointerEvents.add(event);
+    }
+
+    if (!_androidCapturedPointerDrainRunning) {
+      _androidCapturedPointerDrainRunning = true;
+      _androidCapturedPointerDrain = _drainAndroidCapturedInput();
+    }
+    return _androidCapturedPointerDrain;
+  }
+
+  Future<void> _drainAndroidCapturedInput() async {
+    try {
+      while (_androidCapturedPointerEvents.isNotEmpty) {
+        if (parent.target?.closed != false) {
+          _androidCapturedPointerEvents.clear();
+          _androidCapturedQueuedButtonState = _androidCapturedButtonState;
+          return;
+        }
+        if (!keyboardPerm || isViewCamera || !isRelativeMouseModeSupported) {
+          _androidCapturedPointerEvents.clear();
+          _androidCapturedQueuedButtonState = 0;
+          await _releaseAndroidCapturedButtons();
+          return;
+        }
+
+        final event = _androidCapturedPointerEvents.removeFirst();
+        await _sendAndroidCapturedRelativeMouseMove(event.dx, event.dy);
+        if (event.wheelX != 0 || event.wheelY != 0) {
+          await bind.sessionSendMouse(
+            sessionId: sessionId,
+            msg:
+                '{"type": "wheel", "x": "${event.wheelX}", "y": "${event.wheelY}"}',
+          );
+        }
+        if (event.buttonsChanged) {
+          await _updateAndroidCapturedButtons(event.buttonState);
+        }
+        if (event.resetRemainders) {
+          _androidCapturedDeltaRemainderX = 0.0;
+          _androidCapturedDeltaRemainderY = 0.0;
+        }
+      }
+    } catch (_) {
+      _androidCapturedPointerEvents.clear();
+      _androidCapturedQueuedButtonState = _androidCapturedButtonState;
+      rethrow;
+    } finally {
+      _androidCapturedPointerDrainRunning = false;
+    }
+  }
+
+  Future<void> _sendAndroidCapturedRelativeMouseMove(
+      double dx, double dy) async {
+    if (!keyboardPerm || isViewCamera || !isRelativeMouseModeSupported) return;
+    _androidCapturedDeltaRemainderX += dx;
+    _androidCapturedDeltaRemainderY += dy;
+    var x = _androidCapturedDeltaRemainderX.truncate();
+    var y = _androidCapturedDeltaRemainderY.truncate();
+    _androidCapturedDeltaRemainderX -= x;
+    _androidCapturedDeltaRemainderY -= y;
+
+    // A coalesced burst can exceed the protocol's per-event safety clamp.
+    // Split it so no physical movement is discarded under sustained load.
+    // The drawn cursor is not advanced locally: the host reports the position it
+    // actually reached, and predicting it here would accumulate an unbounded
+    // offset whenever an application constrains the pointer.
+    const maxDelta = 10000;
+    while (x != 0 || y != 0) {
+      final sendX = x.clamp(-maxDelta, maxDelta);
+      final sendY = y.clamp(-maxDelta, maxDelta);
+      await bind.sessionSendMouse(
+          sessionId: sessionId,
+          msg: json.encode(modify({
+            'type': 'move_relative',
+            'x': '$sendX',
+            'y': '$sendY',
+          })));
+      x -= sendX;
+      y -= sendY;
+    }
+  }
+
+  Future<void> _updateAndroidCapturedButtons(int buttonState) async {
+    final current = buttonState & 0x1f;
+    final changed = current ^ _androidCapturedButtonState;
+    _androidCapturedButtonState = current;
+    for (final entry in _androidCapturedButtons.entries) {
+      if (changed & entry.key == 0) continue;
+      await _sendMouseUnchecked(
+          current & entry.key != 0 ? 'down' : 'up', entry.value);
+    }
+  }
+
+  Future<void> _releaseAndroidCapturedButtons() async {
+    final held = _androidCapturedButtonState;
+    _androidCapturedButtonState = 0;
+    for (final entry in _androidCapturedButtons.entries) {
+      if (held & entry.key == 0) continue;
+      await _sendMouseUnchecked('up', entry.value);
+    }
+  }
+
   /// Update the pointer lock center position based on current window frame.
   Future<void> updatePointerLockCenter({Offset? localCenter}) {
     return _relativeMouse.updatePointerLockCenter(localCenter: localCenter);
@@ -1265,6 +1479,9 @@ class InputModel {
   }
 
   void disposeRelativeMouseMode() {
+    unawaited(setAndroidPointerCaptureActive(false).catchError((Object e) {
+      debugPrint('[InputModel] failed to release Android captured buttons: $e');
+    }));
     _relativeMouse.dispose();
     onRelativeMouseModeDisabled = null;
     // Cancel the relative mouse mode observer and clean up global state.
@@ -1661,7 +1878,8 @@ class InputModel {
     if (e is PointerScrollEvent) {
       final rawDx = e.scrollDelta.dx;
       final rawDy = e.scrollDelta.dy;
-      final dominantDelta = rawDx.abs() > rawDy.abs() ? rawDx.abs() : rawDy.abs();
+      final dominantDelta =
+          rawDx.abs() > rawDy.abs() ? rawDx.abs() : rawDy.abs();
       final isSmooth = dominantDelta < 1;
       final nowUs = DateTime.now().microsecondsSinceEpoch;
       final dtUs = _lastWheelTsUs == 0 ? 0 : nowUs - _lastWheelTsUs;

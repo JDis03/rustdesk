@@ -894,9 +894,32 @@ class ClientInfo extends StatelessWidget {
 
 void androidChannelInit() {
   gFFI.setMethodCallHandler((method, arguments) {
-    debugPrint("flutter got android msg,$method,$arguments");
+    if (method != "on_captured_pointer") {
+      debugPrint("flutter got android msg,$method,$arguments");
+    }
     try {
       switch (method) {
+        case "on_captured_pointer":
+          {
+            unawaited(gFFI.inputModel
+                .handleAndroidCapturedPointer(
+                    arguments as Map<dynamic, dynamic>)
+                .catchError((Object e) {
+              debugPrint("Failed to handle Android captured pointer: $e");
+            }));
+            break;
+          }
+        case "on_pointer_capture_changed":
+          {
+            final active =
+                (arguments as Map<dynamic, dynamic>)["active"] == true;
+            unawaited(gFFI.inputModel
+                .setAndroidPointerCaptureActive(active)
+                .catchError((Object e) {
+              debugPrint("Failed to update Android pointer capture state: $e");
+            }));
+            break;
+          }
         case "start_capture":
           {
             gFFI.dialogManager.dismissAll();
