@@ -1405,11 +1405,12 @@ class InputModel {
     _androidCapturedDeltaRemainderX -= x;
     _androidCapturedDeltaRemainderY -= y;
 
+    if (x != 0 || y != 0) {
+      parent.target?.cursorModel.moveLocalRelative(x.toDouble(), y.toDouble());
+    }
+
     // A coalesced burst can exceed the protocol's per-event safety clamp.
     // Split it so no physical movement is discarded under sustained load.
-    // The drawn cursor is not advanced locally: the host reports the position it
-    // actually reached, and predicting it here would accumulate an unbounded
-    // offset whenever an application constrains the pointer.
     const maxDelta = 10000;
     while (x != 0 || y != 0) {
       final sendX = x.clamp(-maxDelta, maxDelta);

@@ -3244,6 +3244,24 @@ class CursorModel with ChangeNotifier {
     notifyListeners();
   }
 
+  // A relative event carries no absolute position, so the drawn cursor would sit
+  // still until the host reports where the pointer ended up. Advance it by the
+  // delta that was sent; the reported position still arrives and corrects the
+  // divergence when an application constrains the pointer.
+  moveLocalRelative(double dx, double dy) {
+    var nx = _x + dx;
+    var ny = _y + dy;
+    final rect = parent.target?.ffiModel.rect;
+    if (rect != null) {
+      nx = nx.clamp(rect.left, rect.right);
+      ny = ny.clamp(rect.top, rect.bottom);
+    }
+    if (nx == _x && ny == _y) return;
+    _x = nx;
+    _y = ny;
+    notifyListeners();
+  }
+
   reset() {
     _x = _displayOriginX;
     _y = _displayOriginY;
