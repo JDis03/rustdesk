@@ -472,6 +472,8 @@ class InputModel {
   double _mobileDeltaRemainderY = 0.0;
   double _androidCapturedDeltaRemainderX = 0.0;
   double _androidCapturedDeltaRemainderY = 0.0;
+  double _holdDragDeltaRemainderX = 0.0;
+  double _holdDragDeltaRemainderY = 0.0;
   bool _androidPointerCaptureActive = false;
   int _androidCapturedButtonState = 0;
   int _androidCapturedQueuedButtonState = 0;
@@ -1241,6 +1243,30 @@ class InputModel {
     _mobileDeltaRemainderX -= x;
     _mobileDeltaRemainderY -= y;
     if (x == 0 && y == 0) return;
+    await bind.sessionSendMouse(
+        sessionId: sessionId,
+        msg: json.encode(modify({
+          'type': 'move_relative',
+          'x': '$x',
+          'y': '$y',
+        })));
+  }
+
+  // Games that grab the pointer while a button is held (camera drag) warp it
+  // back to an anchor every frame. The peer does not echo positions to the
+  // sender of absolute moves, so absolute drags keep landing far from that
+  // anchor and each one reads as a huge jump. Send the finger delta instead.
+  Future<void> sendMobileHoldDragRelativeMove(Offset delta) async {
+    if (!keyboardPerm || isViewCamera) return;
+    final scale = parent.target?.canvasModel.scale ?? 1.0;
+    _holdDragDeltaRemainderX += delta.dx / scale;
+    _holdDragDeltaRemainderY += delta.dy / scale;
+    final x = _holdDragDeltaRemainderX.truncate();
+    final y = _holdDragDeltaRemainderY.truncate();
+    _holdDragDeltaRemainderX -= x;
+    _holdDragDeltaRemainderY -= y;
+    if (x == 0 && y == 0) return;
+    parent.target?.cursorModel.moveLocalRelative(x.toDouble(), y.toDouble());
     await bind.sessionSendMouse(
         sessionId: sessionId,
         msg: json.encode(modify({

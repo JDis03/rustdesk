@@ -339,6 +339,10 @@ class _RawTouchGestureDetectorRegionState
     }
     if (!handleTouch) {
       if (isSpecialHoldDragActive) return;
+      if (inputModel.isRelativeMouseModeSupported) {
+        await inputModel.sendMobileHoldDragRelativeMove(d.delta);
+        return;
+      }
       await ffi.cursorModel.updatePan(d.delta, d.localPosition, handleTouch);
     }
   }
